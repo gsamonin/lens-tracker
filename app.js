@@ -22,7 +22,7 @@ const state = {
   cycles: null,
   activeScreen: 'home',
   loading: true,
-  authMessage: null,
+  authMode: 'login',   // 'login' | 'register'
   authError: null,
   flow: null,
   notifPermission: typeof Notification !== 'undefined' ? Notification.permission : 'default',
@@ -170,12 +170,13 @@ async function createCycle(startDateISO, lensType) {
 
 // ───── Auth ─────
 
-async function sendMagicLink(email) {
-  const redirect = window.location.origin + window.location.pathname;
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: redirect },
-  });
+async function signIn(email, password) {
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+}
+
+async function signUp(email, password) {
+  const { error } = await supabase.auth.signUp({ email, password });
   if (error) throw error;
 }
 
@@ -234,6 +235,7 @@ async function checkAndNotify() {
 function loginScreen() {
   const wrap = h('div', { class: 'screen no-tabs' });
   const inner = h('div', { class: 'login-wrap' });
+  const isRegister = state.authMode === 'register';
 
   const logo = h('div', { class: 'login-logo' }, [
     (() => {
@@ -251,43 +253,64 @@ function loginScreen() {
     h('p', {}, 'Не забывай менять линзы вовремя'),
   ]);
 
+  const emailInput = h('input', {
+    type: 'email',
+    placeholder: 'Email',
+    required: true,
+    autocomplete: 'email',
+  });
+
+  const passwordInput = h('input', {
+    type: 'password',
+    placeholder: 'Пароль',
+    required: true,
+    autocomplete: isRegister ? 'new-password' : 'current-password',
+    minlength: 6,
+  });
+
+  const submitBtn = h('button', { type: 'submit', class: 'btn btn-primary btn-large' },
+    isRegister ? 'Зарегистрироваться' : 'Войти');
+
+  const toggleBtn = h('button', {
+    type: 'button',
+    class: 'btn btn-ghost',
+    style: { fontSize: '14px', color: 'var(--text-secondary)' },
+    onclick: () => {
+      state.authMode = isRegister ? 'login' : 'register';
+      state.authError = null;
+      render();
+    },
+  }, isRegister ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться');
+
   const form = h('form', { class: 'login-form', onsubmit: async (e) => {
     e.preventDefault();
     const email = emailInput.value.trim();
-    if (!email) return;
+    const password = passwordInput.value;
+    if (!email || !password) return;
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Отправляем…';
+    submitBtn.textContent = isRegister ? 'Создаём аккаунт…' : 'Входим…';
     try {
-      await sendMagicLink(email);
-      state.authMessage = email;
-      state.authError = null;
+      if (isRegister) {
+        await signUp(email, password);
+        toast('Аккаунт создан! Теперь войди.');
+        state.authMode = 'login';
+        state.authError = null;
+      } else {
+        await signIn(email, password);
+        state.authError = null;
+      }
     } catch (err) {
-      state.authError = err.message || 'Не удалось отправить ссылку';
+      state.authError = err.message || 'Произошла ошибка';
+      submitBtn.disabled = false;
+      submitBtn.textContent = isRegister ? 'Зарегистрироваться' : 'Войти';
     }
     render();
   }});
 
-  const emailInput = h('input', {
-    type: 'email',
-    placeholder: 'твой@email.ru',
-    required: true,
-    autocomplete: 'email',
-  });
-  const submitBtn = h('button', { type: 'submit', class: 'btn btn-primary btn-large' }, 'Получить ссылку для входа');
-
-  form.append(emailInput, submitBtn);
+  form.append(emailInput, passwordInput, submitBtn, toggleBtn);
   if (state.authError) form.append(h('div', { class: 'error-text' }, state.authError));
 
   inner.append(logo, form);
-
-  if (state.authMessage) {
-    inner.append(h('div', { class: 'login-message' }, [
-      'Мы отправили ссылку для входа на ',
-      h('strong', {}, state.authMessage),
-      '. Проверь почту и нажми на неё.',
-    ]));
-  }
-
   wrap.append(inner);
   return wrap;
 }
