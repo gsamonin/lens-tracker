@@ -1,3 +1,4 @@
 node_modules/
 .obsidian/
 lens-tracker-spec.md
+app.bundle.js
