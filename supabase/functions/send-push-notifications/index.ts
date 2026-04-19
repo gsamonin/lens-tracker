@@ -12,13 +12,7 @@ webpush.setVapidDetails(
   VAPID_PRIVATE_KEY,
 );
 
-Deno.serve(async (req) => {
-  // Проверка cron-заголовка (безопасность)
-  const authHeader = req.headers.get('Authorization');
-  if (authHeader !== `Bearer ${Deno.env.get('CRON_SECRET')}`) {
-    return new Response('Unauthorized', { status: 401 });
-  }
-
+Deno.serve(async (_req) => {
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
   const today = new Date().toISOString().split('T')[0];
@@ -36,7 +30,7 @@ Deno.serve(async (req) => {
   }
 
   if (!cycles || cycles.length === 0) {
-    return new Response(JSON.stringify({ sent: 0, message: 'No cycles due today' }), { status: 200 });
+    return new Response(JSON.stringify({ sent: 0, message: 'No cycles due today', today }), { status: 200 });
   }
 
   const userIds = cycles.map((c) => c.user_id);
@@ -50,6 +44,10 @@ Deno.serve(async (req) => {
   if (subsError) {
     console.error('Subs error:', subsError);
     return new Response(JSON.stringify({ error: subsError.message }), { status: 500 });
+  }
+
+  if (!subs || subs.length === 0) {
+    return new Response(JSON.stringify({ sent: 0, message: 'Cycles found but no subscriptions', cyclesCount: cycles.length }), { status: 200 });
   }
 
   const payload = JSON.stringify({
