@@ -26,6 +26,7 @@ const state = {
   authError: null,
   flow: null,
   notifPermission: typeof Notification !== 'undefined' ? Notification.permission : 'default',
+  hasPushSub: false,   // есть ли активная подписка в БД
 };
 
 const root = document.getElementById('app');
@@ -204,6 +205,17 @@ async function savePushSubscription(subscription) {
     .from('push_subscriptions')
     .upsert({ user_id: state.user.id, subscription: subscription.toJSON() }, { onConflict: 'user_id' });
   if (error) throw error;
+  state.hasPushSub = true;
+}
+
+async function loadPushSubStatus() {
+  if (!state.user) return;
+  const { data } = await supabase
+    .from('push_subscriptions')
+    .select('id')
+    .eq('user_id', state.user.id)
+    .maybeSingle();
+  state.hasPushSub = !!data;
 }
 
 async function enableNotifications() {
@@ -221,13 +233,13 @@ async function enableNotifications() {
     }
 
     const reg = await navigator.serviceWorker.ready;
+    // Принудительно пересоздаём подписку чтобы сохранить в БД
     let sub = await reg.pushManager.getSubscription();
-    if (!sub) {
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-      });
-    }
+    if (sub) await sub.unsubscribe();
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    });
     await savePushSubscription(sub);
     toast('Уведомления включены 🎉');
     checkAndNotify();
@@ -238,8 +250,29 @@ async function enableNotifications() {
   render();
 }
 
+async function disableNotifications() {
+  try {
+    const reg = await navigator.serviceWorker?.ready;
+    const sub = await reg?.pushManager?.getSubscription();
+    if (sub) await sub.unsubscribe();
+
+    await supabase
+      .from('push_subscriptions')
+      .delete()
+      .eq('user_id', state.user.id);
+
+    state.hasPushSub = false;
+    toast('Уведомления отключены');
+  } catch (err) {
+    console.error(err);
+    toast('Не удалось отключить уведомления');
+  }
+  render();
+}
+
 async function checkAndNotify() {
   if (state.notifPermission !== 'granted') return;
+  if (!state.hasPushSub) return;
   const active = (state.cycles || []).find((c) => c.status === 'active');
   if (!active) return;
   const today = todayISO();
@@ -623,21 +656,52 @@ function settingsScreen() {
   const perm = state.notifPermission;
   const isGranted = perm === 'granted';
   const isDenied = perm === 'denied';
+  const isActive = isGranted && state.hasPushSub;
+
+  let statusText, statusClass, btnLabel, btnAction, btnClass;
+
+  if (isDenied) {
+    statusText = 'Отключены в настройках браузера';
+    statusClass = 'denied';
+  } else if (isActive) {
+    statusText = 'Включены — придут в день замены';
+    statusClass = 'granted';
+    btnLabel = 'Отключить уведомления';
+    btnAction = () => disableNotifications();
+    btnClass = 'btn btn-danger';
+  } else if (isGranted && !state.hasPushSub) {
+    statusText = 'Разрешены, но подписка не активна';
+    statusClass = '';
+    btnLabel = 'Подписаться на уведомления';
+    btnAction = () => enableNotifications();
+    btnClass = 'btn btn-primary';
+  } else {
+    statusText = 'Не включены';
+    statusClass = '';
+    btnLabel = 'Включить уведомления';
+    btnAction = () => enableNotifications();
+    btnClass = 'btn btn-primary';
+  }
 
   const notifRow = h('div', { class: 'settings-row' }, [
     h('div', { class: 'settings-row-label' }, 'Push-уведомления'),
-    h('div', { class: 'settings-row-value' }, 'В день замены придёт напоминание'),
-    h('div', { class: 'notif-status ' + (isGranted ? 'granted' : isDenied ? 'denied' : '') },
-      isGranted ? 'Включены' : isDenied ? 'Отключены в браузере' : 'Не включены'),
+    h('div', { class: 'settings-row-value' }, 'Напоминание в день замены линз'),
+    h('div', { class: 'notif-status ' + statusClass }, statusText),
   ]);
-  if (!isGranted) {
+
+  if (!isDenied && btnLabel) {
     notifRow.append(h('button', {
-      class: 'btn btn-primary',
+      class: btnClass,
       style: { marginTop: '12px' },
-      disabled: isDenied,
-      onclick: () => enableNotifications(),
-    }, [icon('bell', { size: 18, stroke: '#fff' }), 'Включить уведомления']));
+      onclick: btnAction,
+    }, [icon('bell', { size: 18, stroke: isActive ? undefined : '#fff' }), btnLabel]));
   }
+
+  if (isDenied) {
+    notifRow.append(h('p', { style: { fontSize: '13px', marginTop: '8px' } },
+      'Чтобы включить, разреши уведомления в настройках браузера вручную'));
+  }
+
   list.append(notifRow);
 
   list.append(h('button', {
@@ -706,13 +770,15 @@ async function init() {
     state.user = sess?.user ?? null;
     if (state.user && !wasUser) {
       try { state.cycles = await fetchCycles(); } catch (_) { state.cycles = []; }
+      await loadPushSubStatus();
     }
-    if (!state.user) state.cycles = null;
+    if (!state.user) { state.cycles = null; state.hasPushSub = false; }
     render();
   });
 
   if (state.user) {
     try { state.cycles = await fetchCycles(); } catch (_) { state.cycles = []; }
+    await loadPushSubStatus();
     checkAndNotify();
   }
 
