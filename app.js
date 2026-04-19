@@ -190,22 +190,50 @@ async function signOut() {
 
 // ───── Notifications ─────
 
+const VAPID_PUBLIC_KEY = 'BGN-NqIX-O3oLXMqU-BPrwp-Z-khimbJL1rewisk4-TQCM-6C5Wj-Xaye80oeWLH_uBXQ2C_hgAbkNIBXJK0bCM';
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+async function savePushSubscription(subscription) {
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .upsert({ user_id: state.user.id, subscription: subscription.toJSON() }, { onConflict: 'user_id' });
+  if (error) throw error;
+}
+
 async function enableNotifications() {
-  if (!('Notification' in window)) {
+  if (!('Notification' in window) || !('serviceWorker' in navigator)) {
     toast('Уведомления не поддерживаются');
     return;
   }
   try {
     const perm = await Notification.requestPermission();
     state.notifPermission = perm;
-    if (perm === 'granted') {
-      toast('Уведомления включены');
-      checkAndNotify();
-    } else {
+    if (perm !== 'granted') {
       toast('Разрешение не получено');
+      render();
+      return;
     }
-  } catch (_) {
-    toast('Не удалось включить');
+
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    await savePushSubscription(sub);
+    toast('Уведомления включены 🎉');
+    checkAndNotify();
+  } catch (err) {
+    console.error(err);
+    toast('Не удалось включить уведомления');
   }
   render();
 }
